@@ -1,3 +1,4 @@
 
 *.wav
 hw01/vad-dataset.zip
+/py310/
