@@ -1,0 +1,53 @@
+import redis
+from time import time, sleep
+from datetime import date, datetime
+import psutil
+import uuid  # to retrieve the mac address
+
+REDIS_HOST = "redis-18937.c72.eu-west-1-2.ec2.cloud.redislabs.com"
+REDIS_PORT = 18937
+REDIS_USER = "default"
+REDIS_PASSWORD = "DlfmUPWr2iMKAbzvEiwzLCizwt2yjLkP"
+
+# establish a connection to redis
+redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, username=REDIS_USER, password=REDIS_PASSWORD)
+
+# politecnico wifi block redis connections
+print('Is connected: ', redis_client.ping())
+
+mac_address = hex(uuid.getnode())
+battery_string = f'{mac_address}:battery'
+power_string = f'{mac_address}:power'
+
+# delete previous timeseries
+redis_client.delete(battery_string)
+redis_client.delete(power_string)
+
+# avoid errors if timeseries is already created
+try:
+    # create a timeseries
+    redis_client.ts().create(battery_string, chunk_size=128)  # with chunk size we can control the dimension oh the chunks of the database
+    redis_client.ts().create(power_string, chunk_size=128)
+except redis.ResponseError:
+    pass  # do nothing is the timeseries is already created
+
+counter = 0
+
+while True:
+    timestamp = time()  # number of seconds from 00:00 - 01/01/1970 
+    formatted_datetime = datetime.fromtimestamp(timestamp)
+
+    battery_level = psutil.sensors_battery().percent
+    power_plugged = int(psutil.sensors_battery().power_plugged)
+
+    timestamp_ms = int(time() * 1000)
+    redis_client.ts().add(battery_string, timestamp_ms, battery_level)
+    redis_client.ts().add(power_string, timestamp_ms, power_plugged)
+
+    if counter % 100 == 0:
+        print("communication round: ", counter)
+    counter += 1
+
+    sleep(0.1)
+
+    # last run 19/10/22 from around 21:35
