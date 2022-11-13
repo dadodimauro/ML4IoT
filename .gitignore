@@ -2,3 +2,5 @@
 *.wav
 hw01/vad-dataset.zip
 /py310/
+/hw01/vad-dataset/
+/hw01/recordings/
