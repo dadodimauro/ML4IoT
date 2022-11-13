@@ -1,0 +1,9 @@
+ipython==8.5.0
+psutil==5.9.2
+sounddevice==0.4.5
+scipy==1.9.1
+redis==4.3.4
+tensorflow==2.10.0
+tensorflow-io==0.27.0
+cherrypy==18.8.0
+paho-mqtt==1.6.1

@@ -1,0 +1,4 @@
+py -3.10 -m venv py310
+
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+.\py310\Scripts\activate
