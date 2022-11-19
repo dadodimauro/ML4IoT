@@ -55,9 +55,9 @@ except redis.ResponseError:
     pass  # do nothing is the timeseries is already created
 
 # retention periods
-battery_retention = int(5 * (2^20) / 1.6 * 1000)  # 3276800000s
-power_retention = int(5 * (2^20) / 1.6 * 1000)
-power_plugged_seconds_retention = int((2^20) / 1.6 * 1000)  # 655360000s
+battery_retention = int(5 * (2^20 / 1.6) * 1000)  # 3276800000 ms
+power_retention = int(5 * (2^20 / 1.6) * 1000)
+power_plugged_seconds_retention = int((2^20 / 1.6) * 24 * 60 * 60 * 1000)  # 5.6623104e13 ms
 
 # create retention window
 redis_client.ts().alter(battery_string, retention_msec=battery_retention)
