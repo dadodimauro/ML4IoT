@@ -1,123 +1,94 @@
-import sounddevice as sd
-from scipy.io.wavfile import write
-import time as tm  # used to get the timestamp used as filename
-import os
 import argparse as ap
-import tensorflow as tf
-import tensorflow_io as tfio
-# from preprocessing import *
+import redis
+from time import time, sleep
+from datetime import date, datetime
+import psutil
+import uuid  # to retrieve the mac address
 
-# TO-DO remove all arguments except for device
 parser = ap.ArgumentParser()
-parser.add_argument('--resolution', type=str, default='int16')
-parser.add_argument('--sampleRate', type=int, default=16000)
-parser.add_argument('--nChannels', type=int, default=1)
-parser.add_argument('--duration', type=int, default=1)
-parser.add_argument('--device', type=int, default=0)
+parser.add_argument('--host', type=str, default="redis-18937.c72.eu-west-1-2.ec2.cloud.redislabs.com")
+parser.add_argument('--port', type=int, default=18937)
+parser.add_argument('--user', type=str, default="default")
+parser.add_argument('--password', type=str, default="DlfmUPWr2iMKAbzvEiwzLCizwt2yjLkP")
+parser.add_argument('--delete', type=int, default=0)  # debug
+parser.add_argument('--verbose', type=int, default=0)  # debug
 
 args = parser.parse_args()
 
-#is_silence hyperparametrs
-sampling_rate = 16000
-downsampling_rate = 16000
-frame_length_in_s = 0.016
-dbFSthresh = -140 
-duration_time = 0.128
+REDIS_HOST = args.host
+REDIS_PORT = args.port
+REDIS_USER = args.user
+REDIS_PASSWORD = args.password
 
-# preprocessing funtion
-def get_audio_from_numpy(indata):
-    indata = tf.convert_to_tensor(indata, dtype=tf.float32)
-    indata = 2 * ((indata + 32768) / (32767 + 32768)) - 1  # CORRECT normalization between -1 and 1
-    indata = tf.squeeze(indata)
+# establish a connection to redis
+redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, username=REDIS_USER, password=REDIS_PASSWORD)
 
-    return indata
+if args.verbose == 1:
+    print('Is connected: ', redis_client.ping())
 
+mac_address = hex(uuid.getnode())
+battery_string = f'{mac_address}:battery'
+power_string = f'{mac_address}:power'
+power_plugged_seconds_string = f'{mac_address}:plugged_seconds'
 
-# you modified the get_sepec func. - added indata
-def get_spectrogram_from_numpy(indata, sampling_rate, downsampling_rate, frame_length_in_s, frame_step_in_s):
-    indata = get_audio_from_numpy(indata)
+# print(power_plugged_seconds_string)
 
-    if downsampling_rate != sampling_rate:
-        sampling_rate_int64 = tf.cast(sampling_rate, tf.int64)
-        audio_padded = tfio.audio.resample(audio_padded, sampling_rate_int64, downsampling_rate)
+# bucket size duration for the plugged_seconds timeseries
+bucket_duration_in_ms = 24 * 60 * 60 * 1000  # 24h
+# bucket_duration_in_ms = 60 * 1000  # 60s for testing
 
-    sampling_rate_float32 = tf.cast(downsampling_rate, tf.float32)
+if args.verbose == 1:
+    print(f"bucket duration: {bucket_duration_in_ms}ms")
 
-    # zero padding
-    zero_padding = tf.zeros(tf.cast(downsampling_rate, dtype=tf.int32) - tf.shape(indata), dtype=tf.float32)
-    audio_padded = tf.concat([indata, zero_padding], axis = 0)
+# delete previous timeseries
+if args.delete == 1:
+    redis_client.delete(battery_string)
+    redis_client.delete(power_string)
+    redis_client.delete(power_plugged_seconds_string)
 
-    # conversion from samples to number of seconds
-    frame_length = int(frame_length_in_s * sampling_rate_float32)
-    frame_step = int(frame_step_in_s * sampling_rate_float32)
+# avoid errors if timeseries is already created
+try:
+    # create a timeseries
+    redis_client.ts().create(battery_string)  # default chunk_size = 4KB
+    redis_client.ts().create(power_string)
+    # create timeseries and rule for counting the seconds the power is plugged every 24h
+    redis_client.ts().create(power_plugged_seconds_string, chunk_size=128)  # one record each day -> we can reduce chunk_size
+    redis_client.ts().createrule(power_string, power_plugged_seconds_string, aggregation_type='sum', bucket_size_msec=bucket_duration_in_ms)
+except redis.ResponseError:
+    pass  # do nothing is the timeseries is already created
 
-    # short time fourier transform
-    spectrogram = stft = tf.signal.stft(
-        audio_padded, 
-        frame_length=frame_length,
-        frame_step=frame_step,
-        fft_length=frame_length
-    )
-    spectrogram = tf.abs(stft)
+# retention periods
+battery_retention = int(5 * ((2**20) / 1.6) * 1000)  # 3276800000 ms
+power_retention = int(5 * ((2**20) / 1.6) * 1000)
+power_plugged_seconds_retention = int(((2**20) / 1.6) * 24 * 60 * 60 * 1000)  # 5.6623104e13 ms
 
-    return spectrogram
-# end of preprocessing
+if args.verbose == 1:
+    print(f"retention period battery and power: {battery_retention}ms")
+    print(f"retention period plugged seconds: {power_plugged_seconds_retention}ms")
 
+# create retention window
+redis_client.ts().alter(battery_string, retention_msec=battery_retention)
+redis_client.ts().alter(power_string, retention_msec=power_retention)
+redis_client.ts().alter(power_plugged_seconds_string, retention_msec=power_plugged_seconds_retention)
 
-# VAD 
-def is_silence(indata, sampling_rate, downsampling_rate, frame_length_in_s, dbFSthresh, duration_time):
-    print("issilence called")
-    spectrogram = get_spectrogram_from_numpy(
-        indata,
-        sampling_rate,
-        downsampling_rate,
-        frame_length_in_s,
-        frame_length_in_s
-    )
-    dbFS = 20 * tf.math.log(spectrogram + 1.e-6)
-    energy = tf.math.reduce_mean(dbFS, axis=1)
-    non_silence = energy > dbFSthresh
-    non_silence_frames = tf.math.reduce_sum(tf.cast(non_silence, tf.float32))
-    non_silence_duration = (non_silence_frames + 1) * frame_length_in_s
+seconds_counter = 0
 
-    if non_silence_duration > duration_time:
-        return 0
-    else:
-        return 1
+while True:
+    timestamp_ms = int(time() * 1000)
 
+    # increment seconds counter
+    seconds_counter += 1
 
-# function executed in parallel with the recording
-# indata is a numpy array
-# freames is the number of sample inside indata
-def callback(indata, frames, time, status):
-    global store_audio
-    global args
+    # retreive info about battery and power
+    battery_level = psutil.sensors_battery().percent
+    power_plugged = int(psutil.sensors_battery().power_plugged)
 
-    if store_audio is True:
-        if is_silence(indata, sampling_rate, downsampling_rate, frame_length_in_s, dbFSthresh, duration_time) == 0:  # if not silence
-            timestamp = tm.time()
-            write(f'.\\hw01\\recordings\\{timestamp}.wav', args.sampleRate, indata)
-            print("audio saved")
-    
+    redis_client.ts().add(battery_string, timestamp_ms, battery_level)
+    redis_client.ts().add(power_string, timestamp_ms, power_plugged)
 
-print("recording started")
+    if args.verbose == 1:
+        print(f"runnig for {seconds_counter} seconds")
+        print(battery_string, " - ", battery_level)
+        print(power_string, " - ", power_plugged)
 
-store_audio = True
-
-# device=0 -> default microphone
-# channels=1 -> we use only one channel (there are multichannel microphones)
-# all the code inside the with block is executed while the stream is open
-# blocksize define the number of sample after which the callback function is collecd
-with sd.InputStream(device=args.device, channels=args.nChannels, samplerate=args.sampleRate, dtype=args.resolution, callback=callback, blocksize=args.duration*args.sampleRate):  # create an input stream
-    while True:  # keep the stream open
-        key = input()
-        if key in ['q', 'Q']:  # stop recording if q is pressed
-            print("exit")
-            break
-        if key in ['p', 'P']:
-            store_audio = not store_audio
-            print(f"store audio: {store_audio}")
-
-
-
-
+    sleep(1)
