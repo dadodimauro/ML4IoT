@@ -1,15 +1,17 @@
 import tensorflow as tf
 import tensorflow_io as tfio
 import sounddevice as sd
-from scipy.io.wavfile import write
+# from scipy.io.wavfile import write
 import argparse as ap
-import numpy as np
+# import numpy as np
 import os
 import zipfile
 import psutil
 import uuid  # to retrieve the mac address
 import redis
-from time import time as tm, sleep
+from time import time as tm
+
+# from time import sleep
 
 parser = ap.ArgumentParser()
 parser.add_argument('--resolution', type=str, default='int16')  # debug
@@ -23,12 +25,82 @@ parser.add_argument('--user', type=str, default="default")
 parser.add_argument('--password', type=str, default="DlfmUPWr2iMKAbzvEiwzLCizwt2yjLkP")
 parser.add_argument('--delete', type=int, default=0)  # debug
 parser.add_argument('--verbose', type=int, default=0)  # debug
+parser.add_argument('--debug', type=int, default=0)  # debug
 
 args = parser.parse_args()
 
 
+def generate_timeseries_name():
+    mac_address = hex(uuid.getnode())
+    battery_string = f'{mac_address}:battery'
+    power_string = f'{mac_address}:power'
+    power_plugged_seconds_string = f'{mac_address}:plugged_seconds'
+
+    return battery_string, power_string, power_plugged_seconds_string
+
+
+def get_audio_from_numpy(indata):
+    indata = tf.convert_to_tensor(indata, dtype=tf.float32)
+    indata = 2 * ((indata + 32768) / (32767 + 32768)) - 1  # CORRECT normalization between -1 and 1
+    indata = tf.squeeze(indata)
+
+    return indata
+
+
+def get_spectrogram_from_numpy(indata, sampling_rate, downsampling_rate, frame_length_in_s, frame_step_in_s):
+    indata = get_audio_from_numpy(indata)
+
+    sampling_rate_float32 = tf.cast(downsampling_rate, tf.float32)
+
+    # zero padding
+    zero_padding = tf.zeros(tf.cast(downsampling_rate, dtype=tf.int32) - tf.shape(indata), dtype=tf.float32)
+    audio_padded = tf.concat([indata, zero_padding], axis=0)
+
+    if downsampling_rate != sampling_rate:
+        sampling_rate_int64 = tf.cast(sampling_rate, tf.int64)
+        audio_padded = tfio.audio.resample(audio_padded, sampling_rate_int64, downsampling_rate)
+
+    # conversion from samples to number of seconds
+    frame_length = int(frame_length_in_s * sampling_rate_float32)
+    frame_step = int(frame_step_in_s * sampling_rate_float32)
+
+    # short time fourier transform
+    stft = tf.signal.stft(
+        audio_padded,
+        frame_length=frame_length,
+        frame_step=frame_step,
+        fft_length=frame_length
+    )
+    spectrogram = tf.abs(stft)
+
+    return spectrogram
+
+
+def is_silence(indata, sampling_rate, downsampling_rate, frame_length_in_s, dbFSthresh, duration_time):
+    if args.verbose == 1:
+        print("issilence called")
+
+    spectrogram = get_spectrogram_from_numpy(
+        indata,
+        sampling_rate,
+        downsampling_rate,
+        frame_length_in_s,
+        frame_length_in_s
+    )
+    dbFS = 20 * tf.math.log(spectrogram + 1.e-6)
+    energy = tf.math.reduce_mean(dbFS, axis=1)
+    non_silence = energy > dbFSthresh
+    non_silence_frames = tf.math.reduce_sum(tf.cast(non_silence, tf.float32))
+    non_silence_duration = (non_silence_frames + 1) * frame_length_in_s
+
+    if non_silence_duration > duration_time:
+        return 0
+    else:
+        return 1
+
+
 class SmartBatteryMonitoring:
-    def __init__(self, ISSILENCE_ARGS, PREPROCESSING_ARGS, LABELS, model_path) -> None:
+    def __init__(self, ISSILENCE_ARGS, PREPROCESSING_ARGS, LABELS, model_name, model_path) -> None:
         ######################################
         # -- VAD and classification model -- #
         ######################################
@@ -36,8 +108,9 @@ class SmartBatteryMonitoring:
         self.PREPROCESSING_ARGS = PREPROCESSING_ARGS
         self.LABELS = LABELS
 
+        self.model_name = model_name
         self.model_path = model_path
-        self.zip_model_path = f'{self.model_path}.zip'
+        self.zip_model_path = f'{self.model_name}.tflite.zip'
 
         self.store_audio = False
 
@@ -61,26 +134,28 @@ class SmartBatteryMonitoring:
             upper_edge_hertz=self.upper_frequency
         )
 
+        self.unzip_model()
         # load model
         self.interpreter, self.input_details, self.output_details = self.import_tflite_model()
 
-        ##########################
-        # -- REDIS timeseries -- #
-        ##########################
-        self.REDIS_HOST = args.host
-        self.REDIS_PORT = args.port
-        self.REDIS_USER = args.user
-        self.REDIS_PASSWORD = args.password
+        if args.debug == 0:
+            ##########################
+            # -- REDIS timeseries -- #
+            ##########################
+            self.REDIS_HOST = args.host
+            self.REDIS_PORT = args.port
+            self.REDIS_USER = args.user
+            self.REDIS_PASSWORD = args.password
 
-        # connect to redis
-        self.redis_client = self.connect_to_redis()
+            # connect to redis
+            self.redis_client = self.connect_to_redis()
 
-        self.battery_string, self.power_string, self.power_plugged_seconds_string = self.generate_timeseries_name()
+            self.battery_string, self.power_string, self.power_plugged_seconds_string = generate_timeseries_name()
 
-        # create timeseries
-        self.create_timeseries()
+            # create timeseries
+            self.create_timeseries()
 
-        self.modifiy_retention_periods()
+            self.modifiy_retention_periods()
 
     def connect_to_redis(self):
         # establish a connection to redis
@@ -90,14 +165,6 @@ class SmartBatteryMonitoring:
             print('Is connected: ', redis_client.ping())
 
         return redis_client
-
-    def generate_timeseries_name(self):
-        mac_address = hex(uuid.getnode())
-        battery_string = f'{mac_address}:battery'
-        power_string = f'{mac_address}:power'
-        power_plugged_seconds_string = f'{mac_address}:plugged_seconds'
-
-        return battery_string, power_string, power_plugged_seconds_string
 
     def create_timeseries(self):
         # bucket size duration for the plugged_seconds timeseries
@@ -212,63 +279,7 @@ class SmartBatteryMonitoring:
                 zip_ref.extractall()
             print(f'{self.zip_model_path} un-zipped!')
 
-    def get_audio_from_numpy(self, indata):
-        indata = tf.convert_to_tensor(indata, dtype=tf.float32)
-        indata = 2 * ((indata + 32768) / (32767 + 32768)) - 1  # CORRECT normalization between -1 and 1
-        indata = tf.squeeze(indata)
-
-        return indata
-
-    def get_spectrogram_from_numpy(self, indata, sampling_rate, downsampling_rate, frame_length_in_s, frame_step_in_s):
-        indata = self.get_audio_from_numpy(indata)
-
-        sampling_rate_float32 = tf.cast(downsampling_rate, tf.float32)
-
-        # zero padding
-        zero_padding = tf.zeros(tf.cast(downsampling_rate, dtype=tf.int32) - tf.shape(indata), dtype=tf.float32)
-        audio_padded = tf.concat([indata, zero_padding], axis=0)
-
-        if downsampling_rate != sampling_rate:
-            sampling_rate_int64 = tf.cast(sampling_rate, tf.int64)
-            audio_padded = tfio.audio.resample(audio_padded, sampling_rate_int64, downsampling_rate)
-
-        # conversion from samples to number of seconds
-        frame_length = int(frame_length_in_s * sampling_rate_float32)
-        frame_step = int(frame_step_in_s * sampling_rate_float32)
-
-        # short time fourier transform
-        spectrogram = stft = tf.signal.stft(
-            audio_padded,
-            frame_length=frame_length,
-            frame_step=frame_step,
-            fft_length=frame_length
-        )
-        spectrogram = tf.abs(stft)
-
-        return spectrogram
-
     # VAD
-    def is_silence(self, indata, sampling_rate, downsampling_rate, frame_length_in_s, dbFSthresh, duration_time):
-        if args.verbose == 1:
-            print("issilence called")
-
-        spectrogram = self.get_spectrogram_from_numpy(
-            indata,
-            sampling_rate,
-            downsampling_rate,
-            frame_length_in_s,
-            frame_length_in_s
-        )
-        dbFS = 20 * tf.math.log(spectrogram + 1.e-6)
-        energy = tf.math.reduce_mean(dbFS, axis=1)
-        non_silence = energy > dbFSthresh
-        non_silence_frames = tf.math.reduce_sum(tf.cast(non_silence, tf.float32))
-        non_silence_duration = (non_silence_frames + 1) * frame_length_in_s
-
-        if non_silence_duration > duration_time:
-            return 0
-        else:
-            return 1
 
     def import_tflite_model(self):
         # import the model using the tflite interpreter
@@ -286,27 +297,40 @@ class SmartBatteryMonitoring:
     # indata is a numpy array
     # frames is the number of sample inside indata
     def callback(self, indata, frames, time, status):
-        if self.store_audio is True:
-            # save battery values to redis timeseries
-            self.add_value_to_timeseries()
+        if args.debug == 0:
+            if self.store_audio is True:
+                # save battery values to redis timeseries
+                self.add_value_to_timeseries()
 
-        if self.is_silence(indata, **self.ISSILENCE_ARGS) == 0:  # if not silence
-            # preprocess recorded audio
-            mfccs = self.preprocessing(indata, frames)
-            # predict label
-            output = self.inference(mfccs)
-            if args.verbose == 1:
-                print("audio saved")
-            for index, prob in enumerate(output):
+            if is_silence(indata, **self.ISSILENCE_ARGS) == 0:  # if not silence
+                # preprocess recorded audio
+                mfccs = self.preprocessing(indata, frames)
+                # predict label
+                output = self.inference(mfccs)
                 if args.verbose == 1:
-                    print(f'Probability of {self.LABELS[index]} = {prob * 100:.2f}')
-                if prob > 0.95:
-                    if index == 0:  # stop
-                        print("battery monitoring stopped")
-                        self.store_audio = False
-                    else:  # go
-                        print("battery monitoring started")
-                        self.store_audio = True
+                    print("audio saved")
+                for index, prob in enumerate(output):
+                    if args.verbose == 1:
+                        print(f'Probability of {self.LABELS[index]} = {prob * 100:.2f}')
+                    if prob > 0.95:
+                        if index == 0:  # stop
+                            print("battery monitoring stopped")
+                            self.store_audio = False
+                        else:  # go
+                            print("battery monitoring started")
+                            self.store_audio = True
+        else:
+            if self.store_audio is True:
+                if is_silence(indata, **self.ISSILENCE_ARGS) == 0:  # if not silence
+                    # preprocess recorded audio
+                    mfccs = self.preprocessing(indata, frames)
+                    # predict label
+                    output = self.inference(mfccs)
+                    if args.verbose == 1:
+                        print("audio saved")
+                    for index, prob in enumerate(output):
+                        if args.verbose == 1:
+                            print(f'Probability of {self.LABELS[index]} = {prob * 100:.2f}')
 
     def start_recording(self):
         print("recording started")
@@ -332,12 +356,12 @@ def main():
     # model hyperparameters
     PREPROCESSING_ARGS = {
         'downsampling_rate': 16000,
-        'frame_length_in_s': 0.016,
-        'frame_step_in_s': 0.016,
+        'frame_length_in_s': 0.032,
+        'frame_step_in_s': 0.032,
         'num_mel_bins': 10,
         'lower_frequency': 20,
         'upper_frequency': 8000,
-        'num_coefficients': 40
+        'num_coefficients': 13
     }
 
     # is_silence hyperparametrs
@@ -352,10 +376,10 @@ def main():
     # order of the labels must be the same as the one used in training
     LABELS = ['stop', 'go']  # ATTENTION, MUST BE SAME ORDER
 
-    model_path = os.path.join('.', 'tflite_models', 'model4.tflite')
+    model_name = 'model4'
+    model_path = os.path.join('.', 'tflite_models', f'{model_name}.tflite')
 
-    s = SmartBatteryMonitoring(ISSILENCE_ARGS, PREPROCESSING_ARGS, LABELS, model_path)
-    s.unzip_model()
+    s = SmartBatteryMonitoring(ISSILENCE_ARGS, PREPROCESSING_ARGS, LABELS, model_name, model_path)
     # s.store_audio = True
     s.start_recording()
 
