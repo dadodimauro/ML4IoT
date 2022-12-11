@@ -26,6 +26,10 @@ parser.add_argument('--password', type=str, default="DlfmUPWr2iMKAbzvEiwzLCizwt2
 parser.add_argument('--delete', type=int, default=0)  # debug
 parser.add_argument('--verbose', type=int, default=0)  # debug
 parser.add_argument('--debug', type=int, default=0)  # debug
+parser.add_argument('--downsampling_rate', type=int, default=16000)  # debug
+parser.add_argument('--frame_length_in_s', type=int, default=0.016)  # debug
+parser.add_argument('--dbFSthresh', type=int, default=-120)  # debug
+parser.add_argument('--duration_time', type=int, default=0.128)  # debug
 
 args = parser.parse_args()
 
@@ -367,10 +371,10 @@ def main():
     # is_silence hyperparametrs
     ISSILENCE_ARGS = {
         'sampling_rate': 16000,
-        'downsampling_rate': 16000,
-        'frame_length_in_s': 0.016,
-        'dbFSthresh': -140,
-        'duration_time': 0.128
+        'downsampling_rate': args.downsampling_rate,
+        'frame_length_in_s': args.frame_length_in_s,
+        'dbFSthresh': args.dbFSthresh,  # original -140, in real word scenario -120 works best
+        'duration_time': args.duration_time
     }
 
     # order of the labels must be the same as the one used in training
