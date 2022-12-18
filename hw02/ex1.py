@@ -365,7 +365,7 @@ def main():
         'num_mel_bins': 10,
         'lower_frequency': 20,
         'upper_frequency': 8000,
-        'num_coefficients': 13
+        'num_coefficients': 10
     }
 
     # is_silence hyperparametrs
