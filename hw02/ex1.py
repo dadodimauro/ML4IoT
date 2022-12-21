@@ -165,8 +165,8 @@ class SmartBatteryMonitoring:
         # establish a connection to redis
         redis_client = redis.Redis(host=self.REDIS_HOST, port=self.REDIS_PORT,
                                    username=self.REDIS_USER, password=self.REDIS_PASSWORD)
-        if args.verbose == 1:
-            print('Is connected: ', redis_client.ping())
+        
+        print('Is connected: ', redis_client.ping())
 
         return redis_client
 
@@ -276,6 +276,10 @@ class SmartBatteryMonitoring:
 
     def unzip_model(self):
         # un-zip model if not already done
+
+        print("ATTENTION: if the program doesn't work pleas launch the script from the folder where both the script and the tflite.zip model are stored!")
+        print("ATTENTION: if it still doesn't work please unzip the model manually and put it in the same folder of the python script!")
+
         if not os.path.isfile(self.model_path):
             print("un-zipping model..")
             # un-zip model

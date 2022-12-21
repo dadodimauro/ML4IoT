@@ -1,0 +1,48 @@
+@host = http://localhost:8080
+# @host = https://55e09e29-9ded-46e2-9042-f33f0c7f8cfd.deepnoteproject.com
+
+###
+GET {{host}}/online  
+//status is wrong, use online
+
+
+// -- get items using different filters
+// all messages are case sensitive
+###
+GET {{host}}/todos
+
+###
+GET {{host}}/todos?message=homework
+
+###
+GET {{host}}/todos?completed=true
+
+###
+GET {{host}}/todos?message=homework&completed=true
+// -- end of get requests
+
+// -- add items to TODO list
+###
+POST {{host}}/todos
+Content-Type: application/json
+
+{"message": "Buy Coffee"}
+
+// --
+
+###
+GET {{host}}/todo
+// return error since the id is missing
+
+###
+GET {{host}}/todo/faceed76-011c-432b-9fe1-4eeb0a2b60f8
+// pay attention to use an existing key
+
+###
+PUT {{host}}/todo/faceed76-011c-432b-9fe1-4eeb0a2b60f8
+Content-Type: application/json
+
+{"message": "Buy Coffee", "completed": true}
+
+###
+DELETE {{host}}/todo/faceed76-011c-432b-9fe1-4eeb0a2b60f8
