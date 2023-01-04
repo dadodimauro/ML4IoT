@@ -1,0 +1,42 @@
+@host = https://0126a58f-d2c5-4ddb-8341-ccba1fce35f6.deepnoteproject.com
+
+// GET devices
+###
+GET {{host}}/devices
+
+
+
+//GET device/{MAC_address}
+//200 - OK
+###
+GET {{host}}/device/0x1a7dda7111?from=1671798677626&to=1671801921801
+
+//200 - OK
+###
+GET {{host}}/device/0x38baf82a5cb9?from=1671798677626&to=1671801921801
+
+//400 – Bad Request: missing MAC address
+###
+GET {{host}}/device/
+
+//400 – Bad Request: missing end time
+###
+GET {{host}}/device/0x1a7dda7111?from=1671727720616
+
+//400 – Bad Request: missing start time
+###
+GET {{host}}/device/0x1a7dda7111?to=1671741921801
+
+//404 - Not Found: invalid MAC address
+###
+GET {{host}}/device/0x1a7dda7110?from=1671727720616&to=1671741921801
+
+
+// DELETE device/{MAC_address}
+//200 - OK
+###
+DELETE {{host}}/device/0x1a7dda7111
+
+//404 - Not Found: invalid MAC address
+###
+DELETE {{host}}/device/0x1a7dda7110

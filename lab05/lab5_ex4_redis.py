@@ -19,7 +19,7 @@ is_connected = redis_client.ping()
 print('Redis Connected:', is_connected)
 
 # Flush DB (if needed)
-redis_client.flushdb()
+# redis_client.flushdb()
 
 # Add some JSON objects to the index
 redis_client.json().set(f'todo:{uuid.uuid4()}', Path.root_path(), {'message': 'Buy milk', 'completed': True})
